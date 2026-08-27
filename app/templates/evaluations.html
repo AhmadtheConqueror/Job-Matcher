@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Evaluations | AI Career Assistant{% endblock %}
+
+{% block content %}
+<div class="container evaluation-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">V3 evaluation</p>
+      <h1 class="h2 mb-0">Evaluation Dashboard</h1>
+    </div>
+    <a class="btn btn-dark" href="{{ url_for('main.download_training_data') }}">Download JSONL</a>
+  </div>
+
+  <div class="stats-grid mb-4">
+    <div class="stat-card">
+      <span>Conversations</span>
+      <strong>{{ dashboard.totals.conversations }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>Messages</span>
+      <strong>{{ dashboard.totals.messages }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>Assistant Replies</span>
+      <strong>{{ dashboard.totals.assistant_messages }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>Feedback</span>
+      <strong>{{ dashboard.totals.feedback }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>Training Examples</span>
+      <strong>{{ dashboard.totals.dataset_examples }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>User Messages</span>
+      <strong>{{ dashboard.totals.user_messages }}</strong>
+    </div>
+  </div>
+
+  <div class="evaluation-grid">
+    <section class="section-block">
+      <h2 class="h5">Active Prompt Versions</h2>
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col">Prompt</th>
+              <th scope="col">Version</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for key, version in dashboard.active_prompt_versions.items() %}
+              <tr>
+                <td>{{ key.replace("_", " ")|title }}</td>
+                <td><code>{{ version }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-block">
+      <h2 class="h5">Observed Prompt Usage</h2>
+      {% if dashboard.prompt_counts %}
+        <div class="metric-list">
+          {% for row in dashboard.prompt_counts %}
+            <div class="metric-row">
+              <span>{{ row.label }}</span>
+              <strong>{{ row.count }}</strong>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-secondary mb-0">No prompt usage yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="section-block">
+      <h2 class="h5">Tool Actions</h2>
+      {% if dashboard.tool_counts %}
+        <div class="metric-list">
+          {% for row in dashboard.tool_counts %}
+            <div class="metric-row">
+              <span>{{ row.label.replace("_", " ")|title }}</span>
+              <strong>{{ row.count }}</strong>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-secondary mb-0">No tool actions yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="section-block">
+      <h2 class="h5">Feedback Ratings</h2>
+      {% if dashboard.rating_counts %}
+        <div class="metric-list">
+          {% for row in dashboard.rating_counts %}
+            <div class="metric-row">
+              <span>{{ row.label.replace("_", " ")|title }}</span>
+              <strong>{{ row.count }}</strong>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-secondary mb-0">No feedback yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="section-block">
+      <h2 class="h5">Skill Gap Status</h2>
+      {% if dashboard.skill_gap_counts %}
+        <div class="metric-list">
+          {% for row in dashboard.skill_gap_counts %}
+            <div class="metric-row">
+              <span>{{ row.label|title }}</span>
+              <strong>{{ row.count }}</strong>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-secondary mb-0">No tracked skill gaps yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="section-block">
+      <h2 class="h5">Recent Feedback</h2>
+      {% if dashboard.recent_feedback %}
+        <div class="feedback-list">
+          {% for item in dashboard.recent_feedback %}
+            <article class="feedback-item">
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <strong>{{ item.rating.replace("_", " ")|title }}</strong>
+                <span class="text-secondary">{{ item.created_at.strftime("%Y-%m-%d") }}</span>
+              </div>
+              <p>{{ item.message_excerpt }}</p>
+              {% if item.note %}
+                <p class="text-secondary mb-0">{{ item.note }}</p>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-secondary mb-0">No feedback yet.</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

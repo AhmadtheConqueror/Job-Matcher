@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Upload CV | AI Career Assistant{% endblock %}
+
+{% block content %}
+<div class="container narrow-page">
+  <div class="form-shell">
+    <h1 class="h3 mb-3">Upload CV</h1>
+    <form method="post" enctype="multipart/form-data">
+      <div class="mb-3">
+        <label class="form-label" for="cv_file">CV file</label>
+        <input class="form-control" id="cv_file" name="cv_file" type="file" accept=".pdf,.docx,.txt" required>
+        <div class="form-text">PDF, DOCX, or TXT. Maximum size is 8 MB.</div>
+      </div>
+      <button class="btn btn-dark w-100" type="submit">Upload and Parse</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+

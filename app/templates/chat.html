@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block title %}Career Chat | AI Career Assistant{% endblock %}
+
+{% block content %}
+<div
+  class="container chat-page"
+  data-chat-root
+  data-conversations-url="{{ url_for('main.chat_conversations') }}"
+  data-context-url="{{ url_for('main.chat_context_status') }}"
+  data-new-conversation-url="{{ url_for('main.create_chat_conversation') }}"
+  data-send-url="{{ url_for('main.post_chat_message') }}"
+  data-cover-letter-action-url="{{ url_for('main.chat_cover_letter_action') }}"
+  data-cv-tailoring-action-url="{{ url_for('main.chat_cv_tailoring_plan_action') }}"
+  data-interview-prep-action-url="{{ url_for('main.chat_interview_prep_action') }}"
+  data-skill-gap-action-url="{{ url_for('main.chat_skill_gap_plan_action') }}"
+  data-career-roadmap-action-url="{{ url_for('main.chat_career_roadmap_action') }}"
+  data-skill-gaps-url="{{ url_for('main.skill_gaps') }}"
+>
+  <div class="chat-shell">
+    <aside class="chat-sidebar" aria-label="Conversations">
+      <div class="chat-sidebar-header">
+        <h2 class="h6 mb-0">Conversations</h2>
+        <button class="btn btn-dark btn-sm" type="button" id="chatNewButton">New</button>
+      </div>
+      <div class="chat-conversation-list" id="chatConversationList"></div>
+      <div class="chat-skill-gap-panel">
+        <div class="chat-sidebar-header">
+          <h2 class="h6 mb-0">Skill Gaps</h2>
+        </div>
+        <div class="chat-skill-gap-list" id="chatSkillGapList">
+          <p class="chat-sidebar-empty mb-0">No tracked gaps yet.</p>
+        </div>
+      </div>
+    </aside>
+
+    <section class="chat-panel" aria-label="Career assistant chat">
+      <div class="chat-context-bar">
+        <div class="chat-context-controls">
+          <label class="chat-toggle">
+            <input class="form-check-input" type="checkbox" id="chatIncludeCv" checked>
+            <span>Use latest CV</span>
+          </label>
+          <select class="form-select form-select-sm chat-cv-select" id="chatCvSelect" aria-label="CV to use">
+            <option value="">Latest CV</option>
+          </select>
+          <button class="btn btn-outline-dark btn-sm" type="button" id="chatJobToggle">Job Description</button>
+        </div>
+        <span class="chat-privacy-note" id="chatContextStatus">Checking CV context...</span>
+      </div>
+
+      <div class="chat-job-panel is-hidden" id="chatJobPanel">
+        <div class="chat-job-panel-header">
+          <label class="form-label mb-0" for="chatJobDescription">Job description context</label>
+          <button class="btn btn-outline-dark btn-sm" type="button" id="chatClearJobButton">Clear</button>
+        </div>
+        <textarea
+          class="form-control"
+          id="chatJobDescription"
+          rows="4"
+          maxlength="12000"
+          placeholder="Paste a job description for fit analysis"
+        ></textarea>
+      </div>
+
+      <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
+
+      <div class="chat-starters" id="chatStarters">
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Review my latest CV and tell me the top improvements.">Review my CV</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Compare my CV with this job description and tell me how strong my fit is." data-open-job-context="true">Analyze fit</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Create a CV tailoring plan for this job description." data-open-job-context="true">CV plan</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Prepare interview questions based on my current background.">Interview prep</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Identify skill gaps for this job description." data-open-job-context="true">Skill gaps</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Create a 30-60-90 day career roadmap from my latest CV.">Roadmap</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="What roles should I be applying for based on my CV?">Role ideas</button>
+      </div>
+
+      <form class="chat-composer" id="chatForm">
+        <textarea class="form-control" id="chatInput" rows="2" placeholder="Message the career assistant" maxlength="8000" required></textarea>
+        <button class="btn btn-dark" type="submit" id="chatSendButton">Send</button>
+      </form>
+    </section>
+  </div>
+
+  <template id="chatCoverLetterActionTemplate">
+    <form class="chat-tool-form" data-chat-cover-letter-form>
+      <div class="chat-tool-form-header">
+        <strong>Generate cover letter</strong>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-chat-tool-cancel>Cancel</button>
+      </div>
+      <div class="chat-tool-form-grid">
+        <div>
+          <label class="form-label" for="chatToolRole">Role</label>
+          <input class="form-control" id="chatToolRole" name="role_title" type="text" required>
+        </div>
+        <div>
+          <label class="form-label" for="chatToolCompany">Company</label>
+          <input class="form-control" id="chatToolCompany" name="company" type="text">
+        </div>
+        <div>
+          <label class="form-label" for="chatToolStyle">Style</label>
+          <select class="form-select" id="chatToolStyle" name="letter_style">
+            {% for value, label in style_options.items() %}
+              <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label" for="chatToolLength">Length</label>
+          <select class="form-select" id="chatToolLength" name="letter_length">
+            {% for value, label in length_options.items() %}
+              <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="chat-tool-form-footer">
+        <span class="chat-tool-status" aria-live="polite"></span>
+        <button class="btn btn-dark btn-sm" type="submit">Generate Letter</button>
+      </div>
+    </form>
+  </template>
+
+  <template id="chatCvPlanActionTemplate">
+    <form class="chat-tool-form" data-chat-cv-plan-form>
+      <div class="chat-tool-form-header">
+        <strong>Create CV tailoring plan</strong>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-chat-tool-cancel>Cancel</button>
+      </div>
+      <div class="chat-tool-form-grid">
+        <div>
+          <label class="form-label" for="chatCvPlanRole">Role</label>
+          <input class="form-control" id="chatCvPlanRole" name="role_title" type="text">
+        </div>
+        <div>
+          <label class="form-label" for="chatCvPlanCompany">Company</label>
+          <input class="form-control" id="chatCvPlanCompany" name="company" type="text">
+        </div>
+      </div>
+      <div class="chat-tool-form-footer">
+        <span class="chat-tool-status" aria-live="polite"></span>
+        <button class="btn btn-dark btn-sm" type="submit">Create Plan</button>
+      </div>
+    </form>
+  </template>
+
+  <template id="chatInterviewActionTemplate">
+    <form class="chat-tool-form" data-chat-interview-form>
+      <div class="chat-tool-form-header">
+        <strong>Prepare interview questions</strong>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-chat-tool-cancel>Cancel</button>
+      </div>
+      <div class="chat-tool-form-grid">
+        <div>
+          <label class="form-label" for="chatInterviewRole">Role</label>
+          <input class="form-control" id="chatInterviewRole" name="role_title" type="text">
+        </div>
+        <div>
+          <label class="form-label" for="chatInterviewCompany">Company</label>
+          <input class="form-control" id="chatInterviewCompany" name="company" type="text">
+        </div>
+      </div>
+      <div class="chat-tool-form-footer">
+        <span class="chat-tool-status" aria-live="polite"></span>
+        <button class="btn btn-dark btn-sm" type="submit">Prepare</button>
+      </div>
+    </form>
+  </template>
+
+  <template id="chatSkillGapActionTemplate">
+    <form class="chat-tool-form" data-chat-skill-gap-form>
+      <div class="chat-tool-form-header">
+        <strong>Identify skill gaps</strong>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-chat-tool-cancel>Cancel</button>
+      </div>
+      <div class="chat-tool-form-grid">
+        <div>
+          <label class="form-label" for="chatSkillGapRole">Role</label>
+          <input class="form-control" id="chatSkillGapRole" name="role_title" type="text">
+        </div>
+        <div>
+          <label class="form-label" for="chatSkillGapCompany">Company</label>
+          <input class="form-control" id="chatSkillGapCompany" name="company" type="text">
+        </div>
+      </div>
+      <div class="chat-tool-form-footer">
+        <span class="chat-tool-status" aria-live="polite"></span>
+        <button class="btn btn-dark btn-sm" type="submit">Track Gaps</button>
+      </div>
+    </form>
+  </template>
+
+  <template id="chatRoadmapActionTemplate">
+    <form class="chat-tool-form" data-chat-roadmap-form>
+      <div class="chat-tool-form-header">
+        <strong>Create career roadmap</strong>
+        <button class="btn btn-outline-dark btn-sm" type="button" data-chat-tool-cancel>Cancel</button>
+      </div>
+      <div class="chat-tool-form-grid">
+        <div>
+          <label class="form-label" for="chatRoadmapRole">Target role</label>
+          <input class="form-control" id="chatRoadmapRole" name="target_role" type="text">
+        </div>
+        <div>
+          <label class="form-label" for="chatRoadmapCompany">Company or sector</label>
+          <input class="form-control" id="chatRoadmapCompany" name="company" type="text">
+        </div>
+      </div>
+      <div class="chat-tool-form-footer">
+        <span class="chat-tool-status" aria-live="polite"></span>
+        <button class="btn btn-dark btn-sm" type="submit">Create Roadmap</button>
+      </div>
+    </form>
+  </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chat.js', v='chat-layout-5') }}"></script>
+{% endblock %}

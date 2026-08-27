@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}AI Career Assistant{% endblock %}
+
+{% block content %}
+<section class="hero-band">
+  <div class="container">
+    <div class="row align-items-center g-5">
+      <div class="col-lg-7">
+        <p class="eyebrow">Career tools for stronger CVs</p>
+        <h1 class="display-4 fw-bold mb-3">AI Career Assistant</h1>
+        <p class="lead text-secondary mb-4">
+          Upload a CV, compare it with real job descriptions, understand strong and weak points, and generate a polished cover letter.
+        </p>
+        <div class="d-flex flex-wrap gap-2">
+          <a class="btn btn-dark btn-lg" href="{{ url_for('auth.register') }}">Start Reviewing</a>
+          <a class="btn btn-outline-dark btn-lg" href="{{ url_for('auth.login') }}">Login</a>
+        </div>
+      </div>
+      <div class="col-lg-5">
+        <div class="signal-panel">
+          <div class="signal-row">
+            <span>CV analysis</span>
+            <strong>Ready</strong>
+          </div>
+          <div class="signal-row">
+            <span>Job matching</span>
+            <strong>Ready</strong>
+          </div>
+          <div class="signal-row">
+            <span>Cover letters</span>
+            <strong>Ready</strong>
+          </div>
+          <div class="signal-row">
+            <span>PDF cover letters</span>
+            <strong>Ready</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

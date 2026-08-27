@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Cover Letter | AI Career Assistant{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Application writing</p>
+      <h1 class="h2 mb-0">Generate Cover Letter</h1>
+    </div>
+  </div>
+
+  <form
+    class="section-block mb-4"
+    method="post"
+    data-ai-loading
+    data-loading-title="Drafting your cover letter"
+    data-loading-message="The AI is shaping your CV evidence and the role details into a polished draft."
+  >
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label" for="cv_id">CV</label>
+        <select class="form-select" id="cv_id" name="cv_id" required>
+          <option value="">Choose a CV</option>
+          {% for cv in cvs %}
+            <option value="{{ cv.id }}">{{ cv.original_filename }} - {{ cv.created_at.strftime("%Y-%m-%d") }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="title">Role</label>
+        <input class="form-control" id="title" name="title" type="text" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="company">Company</label>
+        <input class="form-control" id="company" name="company" type="text">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="letter_style">Style</label>
+        <select class="form-select" id="letter_style" name="letter_style">
+          {% for value, label in style_options.items() %}
+            <option value="{{ value }}" {% if selected_style == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="letter_length">Length</label>
+        <select class="form-select" id="letter_length" name="letter_length">
+          {% for value, label in length_options.items() %}
+            <option value="{{ value }}" {% if selected_length == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12">
+        <label class="form-label" for="description">Job description</label>
+        <textarea class="form-control text-area-lg" id="description" name="description" required></textarea>
+      </div>
+    </div>
+    <div class="mt-3">
+      <button class="btn btn-dark" type="submit">Generate Letter</button>
+    </div>
+  </form>
+
+  {% if generated_letter %}
+    <article class="section-block cover-letter-shell">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <h2 class="h5 mb-0">Draft</h2>
+        <div class="d-flex flex-wrap gap-2">
+          <button class="btn btn-outline-dark btn-sm" type="button" data-copy-target="#coverLetterPlainText">Copy Text</button>
+          <form method="post" action="{{ url_for('main.download_cover_letter') }}">
+            <input type="hidden" name="letter_payload" value="{{ letter_payload }}">
+            <input type="hidden" name="letter_text" value="{{ letter_text }}">
+            <input type="hidden" name="role_title" value="{{ role_title }}">
+            <input type="hidden" name="company" value="{{ company }}">
+            <button class="btn btn-outline-dark btn-sm" type="submit">Download PDF</button>
+          </form>
+        </div>
+      </div>
+      <div class="letter-preview">
+        {% if generated_letter.candidate_name %}
+          <h3>{{ generated_letter.candidate_name }}</h3>
+        {% endif %}
+        {% set contact_parts = [] %}
+        {% if generated_letter.contact_line %}
+          {% set _ = contact_parts.append(generated_letter.contact_line) %}
+        {% endif %}
+        {% if generated_letter.portfolio_url %}
+          {% set _ = contact_parts.append(generated_letter.portfolio_url) %}
+        {% endif %}
+        {% if contact_parts %}
+          <p class="letter-meta">{{ contact_parts|join(" | ") }}</p>
+        {% endif %}
+
+        {% if generated_letter.date or generated_letter.recipient_name or generated_letter.company or generated_letter.company_location %}
+          <div class="letter-address">
+            {% if generated_letter.date %}<p>{{ generated_letter.date }}</p>{% endif %}
+            {% if generated_letter.recipient_name %}<p>{{ generated_letter.recipient_name }}</p>{% endif %}
+            {% if generated_letter.company %}<p>{{ generated_letter.company }}</p>{% endif %}
+            {% if generated_letter.company_location %}<p>{{ generated_letter.company_location }}</p>{% endif %}
+          </div>
+        {% endif %}
+
+        {% if generated_letter.subject %}
+          <p class="letter-subject">{{ generated_letter.subject }}</p>
+        {% endif %}
+        <p>{{ generated_letter.salutation }}</p>
+        {% for paragraph in [
+          generated_letter.opening_paragraph,
+          generated_letter.experience_paragraph,
+          generated_letter.skills_paragraph,
+          generated_letter.closing_paragraph
+        ] %}
+          {% if paragraph %}
+            <p>{{ paragraph }}</p>
+          {% endif %}
+        {% endfor %}
+        <p class="mb-0">{{ generated_letter.sign_off }}{% if generated_letter.candidate_name_signature %}<br>{{ generated_letter.candidate_name_signature }}{% endif %}</p>
+      </div>
+      <textarea class="visually-hidden" id="coverLetterPlainText" readonly>{{ letter_text }}</textarea>
+    </article>
+  {% endif %}
+</div>
+{% endblock %}

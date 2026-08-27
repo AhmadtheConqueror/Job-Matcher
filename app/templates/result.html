@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Analysis Result | AI Career Assistant{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">{{ result.job_description.company or "Company not listed" }}</p>
+      <h1 class="h2 mb-0">{{ result.job_description.title }}</h1>
+    </div>
+    <a class="btn btn-outline-dark" href="{{ url_for('main.match_job') }}">Analyze Another Job</a>
+  </div>
+
+  <article class="section-block analysis-card">
+    <div class="analysis-content" id="analysisContent">
+      {% for block in result_blocks %}
+        {% if block.kind == "heading" %}
+          <h2 class="analysis-section-title">{{ block.content|inline_markup }}</h2>
+        {% elif block.kind == "list" %}
+          <ul class="analysis-list">
+            {% for item in block.entries %}
+              <li>{{ item|inline_markup }}</li>
+            {% endfor %}
+          </ul>
+        {% elif block.kind == "ordered_list" %}
+          <ol class="analysis-list">
+            {% for item in block.entries %}
+              <li>{{ item|inline_markup }}</li>
+            {% endfor %}
+          </ol>
+        {% else %}
+          <p class="analysis-paragraph">{{ block.content|inline_markup }}</p>
+        {% endif %}
+      {% endfor %}
+    </div>
+
+    <textarea class="visually-hidden" id="analysisPlainText" readonly>{{ result.result_text }}</textarea>
+
+    <div class="analysis-actions">
+      <button class="btn btn-outline-dark btn-sm" type="button" data-copy-target="#analysisPlainText">Copy Text</button>
+      <a class="btn btn-dark btn-sm" href="{{ url_for('main.download_result_pdf', result_id=result.id) }}">Download PDF</a>
+    </div>
+  </article>
+</div>
+{% endblock %}
