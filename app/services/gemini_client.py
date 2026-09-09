@@ -4,7 +4,6 @@ import httpx
 import requests
 from flask import current_app, has_app_context
 from google import genai
-from google.genai._interactions import _exceptions as interactions_errors
 from google.genai import errors as genai_errors
 
 AI_REQUEST_FAILED_PREFIX = "Gemini request failed."
@@ -89,24 +88,29 @@ def _stream_generate_content(client, contents):
 def _stream_interaction_text(client, request_kwargs):
     stream = client.interactions.create(**request_kwargs)
     for event in stream:
-        if getattr(event, "event_type", "") != "content.delta":
-            continue
-
-        delta = getattr(event, "delta", None)
-        if getattr(delta, "type", "") != "text":
-            continue
-
-        text = getattr(delta, "text", "") or ""
+        text = _interaction_event_text(event)
         if text:
             yield text
+
+
+def _interaction_event_text(event):
+    """Extract text from current 2.x step events and older event doubles."""
+    event_type = getattr(event, "event_type", "")
+    if event_type == "step.delta":
+        delta = getattr(event, "delta", None)
+    elif event_type == "content.delta":
+        delta = getattr(event, "delta", None)
+    else:
+        return ""
+
+    if getattr(delta, "type", "") != "text":
+        return ""
+    return getattr(delta, "text", "") or ""
 
 
 def describe_gemini_error(error):
     if isinstance(error, genai_errors.APIError):
         return _describe_api_error(error)
-
-    if isinstance(error, interactions_errors.APIStatusError):
-        return _describe_interactions_api_error(error)
 
     if _is_socket_permission_error(error):
         return (
@@ -195,82 +199,6 @@ def _describe_api_error(error):
     return AI_REQUEST_FAILED_MESSAGE
 
 
-def _describe_interactions_api_error(error):
-    code = getattr(error, "status_code", None)
-    body = _normalized_error_body(getattr(error, "body", None))
-    status = body.get("status")
-    reason = _error_reason(body)
-    message = body.get("message")
-    label = _api_error_label(code, reason or status)
-    suffix = f" ({label})." if label else "."
-
-    if reason == "API_KEY_INVALID" or "api key not valid" in (message or "").lower():
-        return (
-            f"{AI_REQUEST_FAILED_PREFIX} Google says GEMINI_API_KEY is not a "
-            f"valid Gemini API key{suffix} Create a new key from Google AI "
-            "Studio, replace the value in .env, save it, and restart Flask."
-        )
-
-    if code in {401, 403}:
-        return (
-            f"{AI_REQUEST_FAILED_PREFIX} Google rejected GEMINI_API_KEY or the "
-            f"linked project permissions{suffix} Create or migrate to a current "
-            "Google AI Studio Gemini API key, then check key restrictions, "
-            "billing/access, and restart Flask."
-        )
-
-    if code == 404:
-        model = (
-            current_app.config.get("GEMINI_MODEL", "the configured model")
-            if has_app_context()
-            else "the configured model"
-        )
-        return (
-            f"{AI_REQUEST_FAILED_PREFIX} Google could not find the configured "
-            f"model '{model}'{suffix} Check GEMINI_MODEL in .env."
-        )
-
-    if code == 429:
-        return (
-            f"{AI_REQUEST_FAILED_PREFIX} Gemini quota or rate limits were hit"
-            f"{suffix} Wait a moment, check quota, or switch to a model/project "
-            "with available capacity."
-        )
-
-    if code and 400 <= code < 500:
-        return (
-            f"{AI_REQUEST_FAILED_PREFIX} Google rejected the request{suffix} "
-            "Check the model name, prompt size, API key, and attached CV/job text."
-        )
-
-    if code and code >= 500:
-        return (
-            f"{AI_REQUEST_FAILED_PREFIX} Google AI returned a temporary server "
-            f"error{suffix} Try again shortly."
-        )
-
-    return AI_REQUEST_FAILED_MESSAGE
-
-
-def _normalized_error_body(body):
-    if isinstance(body, list) and body:
-        body = body[0]
-    if not isinstance(body, dict):
-        return {}
-    error = body.get("error")
-    return error if isinstance(error, dict) else body
-
-
-def _error_reason(body):
-    details = body.get("details") if isinstance(body, dict) else None
-    if not isinstance(details, list):
-        return ""
-    for detail in details:
-        if isinstance(detail, dict) and detail.get("reason"):
-            return detail["reason"]
-    return ""
-
-
 def _api_error_label(code, status):
     parts = []
     if code:
@@ -282,7 +210,6 @@ def _api_error_label(code, status):
 
 def _is_timeout_error(error):
     timeout_types = (
-        interactions_errors.APITimeoutError,
         httpx.TimeoutException,
         requests.exceptions.Timeout,
         TimeoutError,
@@ -292,7 +219,6 @@ def _is_timeout_error(error):
 
 def _is_connectivity_error(error):
     connectivity_types = (
-        interactions_errors.APIConnectionError,
         httpx.NetworkError,
         requests.exceptions.ConnectionError,
         OSError,
