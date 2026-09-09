@@ -1,10 +1,13 @@
 {% extends "base.html" %}
+{% from "macros/skeletons.html" import conversation, message %}
 
 {% block title %}Career Chat | AI Career Assistant{% endblock %}
+{% block nav_class %}chat-navbar{% endblock %}
+{% block main_class %}chat-main{% endblock %}
 
 {% block content %}
 <div
-  class="container chat-page"
+  class="chat-page"
   data-chat-root
   data-conversations-url="{{ url_for('main.chat_conversations') }}"
   data-context-url="{{ url_for('main.chat_context_status') }}"
@@ -17,53 +20,37 @@
   data-career-roadmap-action-url="{{ url_for('main.chat_career_roadmap_action') }}"
   data-skill-gaps-url="{{ url_for('main.skill_gaps') }}"
 >
+  <div class="chat-sidebar-backdrop" id="chatSidebarBackdrop" hidden></div>
   <div class="chat-shell">
-    <aside class="chat-sidebar" aria-label="Conversations">
+    <aside class="chat-sidebar" id="chatSidebar" aria-label="Conversations">
       <div class="chat-sidebar-header">
-        <h2 class="h6 mb-0">Conversations</h2>
-        <button class="btn btn-dark btn-sm" type="button" id="chatNewButton">New</button>
+        <button class="chat-icon-button" type="button" id="chatSidebarToggle" aria-label="Collapse conversations" aria-expanded="true">
+          <span aria-hidden="true">&lt;</span>
+        </button>
+        <button class="btn btn-dark btn-sm chat-new-button" type="button" id="chatNewButton">
+          <span aria-hidden="true">+</span>
+          <span class="chat-new-label">New Chat</span>
+        </button>
       </div>
-      <div class="chat-conversation-list" id="chatConversationList"></div>
-      <div class="chat-skill-gap-panel">
-        <div class="chat-sidebar-header">
-          <h2 class="h6 mb-0">Skill Gaps</h2>
-        </div>
-        <div class="chat-skill-gap-list" id="chatSkillGapList">
-          <p class="chat-sidebar-empty mb-0">No tracked gaps yet.</p>
-        </div>
+      <div class="chat-sidebar-section-label">Recent conversations</div>
+      <div class="chat-conversation-list" id="chatConversationList" aria-busy="true">
+        {{ conversation() }}
+        {{ conversation() }}
+        {{ conversation() }}
       </div>
     </aside>
 
     <section class="chat-panel" aria-label="Career assistant chat">
-      <div class="chat-context-bar">
-        <div class="chat-context-controls">
-          <label class="chat-toggle">
-            <input class="form-check-input" type="checkbox" id="chatIncludeCv" checked>
-            <span>Use latest CV</span>
-          </label>
-          <select class="form-select form-select-sm chat-cv-select" id="chatCvSelect" aria-label="CV to use">
-            <option value="">Latest CV</option>
-          </select>
-          <button class="btn btn-outline-dark btn-sm" type="button" id="chatJobToggle">Job Description</button>
+      <div class="chat-thread-header">
+        <button class="btn btn-outline-dark btn-sm chat-mobile-menu-button" type="button" id="chatMobileSidebarButton">Menu</button>
+        <div>
+          <h1 class="h6 mb-0">Career Assistant</h1>
         </div>
-        <span class="chat-privacy-note" id="chatContextStatus">Checking CV context...</span>
       </div>
 
-      <div class="chat-job-panel is-hidden" id="chatJobPanel">
-        <div class="chat-job-panel-header">
-          <label class="form-label mb-0" for="chatJobDescription">Job description context</label>
-          <button class="btn btn-outline-dark btn-sm" type="button" id="chatClearJobButton">Clear</button>
-        </div>
-        <textarea
-          class="form-control"
-          id="chatJobDescription"
-          rows="4"
-          maxlength="12000"
-          placeholder="Paste a job description for fit analysis"
-        ></textarea>
+      <div class="chat-messages" id="chatMessages" aria-live="polite" aria-busy="true">
+        {{ message() }}
       </div>
-
-      <div class="chat-messages" id="chatMessages" aria-live="polite"></div>
 
       <div class="chat-starters" id="chatStarters">
         <button class="btn btn-outline-dark btn-sm" type="button" data-starter-message="Review my latest CV and tell me the top improvements.">Review my CV</button>
@@ -76,10 +63,71 @@
       </div>
 
       <form class="chat-composer" id="chatForm">
-        <textarea class="form-control" id="chatInput" rows="2" placeholder="Message the career assistant" maxlength="8000" required></textarea>
-        <button class="btn btn-dark" type="submit" id="chatSendButton">Send</button>
+        <div class="chat-context-strip">
+          <label class="chat-context-chip chat-cv-chip" id="chatCvChip">
+            <input class="chat-context-checkbox" type="checkbox" id="chatIncludeCv" checked>
+            <span class="chat-chip-check" aria-hidden="true"></span>
+            <span id="chatCvChipText">Use primary CV</span>
+          </label>
+          <select class="form-select form-select-sm chat-cv-select" id="chatCvSelect" aria-label="CV to use">
+            <option value="">Primary CV</option>
+          </select>
+          <a class="chat-context-chip chat-cv-warning is-hidden" id="chatCvUploadLink" href="{{ url_for('main.upload_cv') }}">No primary CV - Upload CV</a>
+          <button class="chat-context-chip" type="button" id="chatJobToggle" aria-expanded="false">+ Job description</button>
+          <button class="chat-context-chip" type="button" id="chatSkillGapDrawerToggle">View Skill Gaps</button>
+          <span class="visually-hidden" id="chatContextStatus" aria-live="polite">Checking CV context...</span>
+        </div>
+
+        <div class="chat-job-panel is-hidden" id="chatJobPanel">
+          <div class="chat-job-panel-header">
+            <label class="form-label mb-0" for="chatJobDescription">Job description</label>
+            <button class="btn btn-outline-dark btn-sm" type="button" id="chatClearJobButton">Clear</button>
+          </div>
+          <textarea
+            class="form-control"
+            id="chatJobDescription"
+            rows="4"
+            maxlength="12000"
+            placeholder="Paste a job description for fit analysis"
+          ></textarea>
+        </div>
+
+        <div class="chat-input-row">
+          <textarea class="form-control" id="chatInput" rows="1" placeholder="Ask Career Assistant anything..." maxlength="8000" required></textarea>
+          <button class="btn btn-outline-dark is-hidden" type="button" id="chatStopButton" disabled>Stop</button>
+          <button class="btn btn-dark" type="submit" id="chatSendButton" disabled>Send</button>
+        </div>
       </form>
     </section>
+  </div>
+
+  <div class="chat-drawer-backdrop" id="chatDrawerBackdrop" hidden></div>
+  <aside class="chat-skill-gap-drawer" id="chatSkillGapDrawer" aria-label="Tracked skill gaps" aria-hidden="true">
+    <div class="chat-drawer-header">
+      <h2 class="h6 mb-0">Skill Gaps</h2>
+      <button class="btn btn-outline-dark btn-sm" type="button" id="chatSkillGapDrawerClose">Close</button>
+    </div>
+    <div class="chat-skill-gap-list" id="chatSkillGapList" aria-busy="true">
+      <div class="skeleton-row" aria-hidden="true">
+        <span class="skeleton skeleton-avatar"></span>
+        <span class="skeleton-row-copy">
+          <span class="skeleton skeleton-title"></span>
+          <span class="skeleton skeleton-text skeleton-text-short"></span>
+        </span>
+      </div>
+      <div class="skeleton-row" aria-hidden="true">
+        <span class="skeleton skeleton-avatar"></span>
+        <span class="skeleton-row-copy">
+          <span class="skeleton skeleton-title"></span>
+          <span class="skeleton skeleton-text skeleton-text-short"></span>
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="chat-conversation-menu" id="chatConversationMenu" role="menu" hidden>
+    <button type="button" role="menuitem" data-conversation-menu-action="rename">Rename</button>
+    <button type="button" role="menuitem" data-conversation-menu-action="delete">Delete</button>
   </div>
 
   <template id="chatCoverLetterActionTemplate">
@@ -216,5 +264,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/chat.js', v='chat-layout-5') }}"></script>
+<script src="{{ url_for('static', filename='js/chat.js', v='chat-redesign-1') }}"></script>
 {% endblock %}

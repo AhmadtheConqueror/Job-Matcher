@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="logoTitle">
+  <title id="logoTitle">AI Career Assistant</title>
+  <defs>
+    <linearGradient id="logoBg" x1="86" y1="430" x2="430" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061D62"/>
+      <stop offset="0.42" stop-color="#0647E8"/>
+      <stop offset="1" stop-color="#20B9F4"/>
+    </linearGradient>
+    <linearGradient id="logoMark" x1="162" y1="342" x2="371" y2="162" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#BFEFFF"/>
+      <stop offset="0.42" stop-color="#F7FCFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <linearGradient id="logoMarkSoft" x1="260" y1="224" x2="366" y2="352" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8FDFFF"/>
+      <stop offset="1" stop-color="#E9FEFF"/>
+    </linearGradient>
+    <linearGradient id="logoArrow" x1="88" y1="407" x2="433" y2="176" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1AA7FF"/>
+      <stop offset="0.58" stop-color="#E8FBFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <filter id="logoShadow" x="-10%" y="-8%" width="120%" height="124%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#08266B" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect x="25" y="25" width="462" height="462" rx="88" fill="url(#logoBg)" filter="url(#logoShadow)"/>
+  <path fill="url(#logoMarkSoft)" opacity="0.92" d="M282 151c18.5-32.5 65-31.9 82.7 1.1l84.7 188.6c8.7 19.2-5.4 41-26.5 41h-48.4c-16.5 0-31.3-9.9-37.6-25.1l-76.1-183.8 21.2-21.8z"/>
+  <path fill="url(#logoMark)" d="M111.2 380.9 224.6 156c9.2-18.3 27.9-29.8 48.4-29.8h20.6c20.9 0 39.9 12 48.9 30.9l15.1 31.7-96.5 177.6-79.4 34.8c-31.3 13.8-57.9 37.1-76.3 66l5.8-86.3z"/>
+  <path fill="#FFFFFF" opacity="0.78" d="M283.8 127.2h9.8c20.9 0 39.9 12 48.9 30.9l15.1 31.7-63.8 117.4-62.8 26.9 80.2-159.3c10.4-20.8-4.7-47.6-27.4-47.6z"/>
+  <path fill="#002DAD" opacity="0.55" d="M97.5 404.4c67.9-81.5 142.3-111.5 210.8-139.1 47.1-18.9 91.5-36.8 129.9-75.8l21.2 20.9c-42.7 43.3-91.8 63.1-139.3 82.2-68.6 27.6-133.3 53.7-195.1 127.8l-27.5-16z"/>
+  <path fill="none" stroke="url(#logoArrow)" stroke-linecap="round" stroke-width="44" d="M73.2 440.4c50.6-102.6 131.5-141.9 222-177.9 65.3-26 111.7-54.7 151.8-112.1"/>
+  <path fill="#FFFFFF" d="m408.8 171.5 63.5-26.8c8-3.4 16.8 2.5 16.8 11.1v68.1c0 10.6-12.8 15.8-20.2 8.2l-22.8-23.3-67.8 67.7c-9.9 9.9-26.2 1.1-23.7-12.7l8-44.1-48.7-13.1c-11.5-3.1-12.8-18.9-1.8-23.8l96.7-11.3z"/>
+</svg>

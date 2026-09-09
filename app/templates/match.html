@@ -1,22 +1,22 @@
 {% extends "base.html" %}
 
-{% block title %}Match Job | AI Career Assistant{% endblock %}
+{% block title %}Job Match | AI Career Assistant{% endblock %}
 
 {% block content %}
 <div class="container">
   <div class="page-heading">
     <div>
       <p class="eyebrow">AI analysis</p>
-      <h1 class="h2 mb-0">Match CV to Job</h1>
+      <h1 class="h2 mb-0">Job Match</h1>
     </div>
   </div>
 
   <form
     class="section-block"
     method="post"
-    data-ai-loading
-    data-loading-title="Matching your CV to the role"
-    data-loading-message="The AI is comparing your experience with the job description and preparing focused feedback."
+    data-ai-stream-form
+    data-ai-stream-kind="match"
+    data-ai-stream-url="{{ url_for('main.stream_match_job') }}"
   >
     <div class="row g-3">
       <div class="col-md-6">
@@ -42,8 +42,28 @@
       </div>
     </div>
     <div class="mt-3">
+      <button class="btn btn-outline-dark" type="button" data-ai-stream-stop hidden disabled>Stop</button>
       <button class="btn btn-dark" type="submit">Run Analysis</button>
     </div>
   </form>
+
+  <article class="section-block analysis-card ai-stream-result" data-ai-stream-result="match" hidden>
+    <div class="ai-stream-actions">
+      <a class="btn btn-outline-dark btn-sm" href="#" data-ai-stream-result-link hidden>Open Saved Analysis</a>
+      <a class="btn btn-outline-dark btn-sm" href="#" data-ai-stream-download-link hidden>Download PDF</a>
+    </div>
+    <div class="analysis-content">
+      <div class="chat-stream-status" data-ai-stream-status aria-live="polite"></div>
+      <pre class="analysis-output ai-stream-output" data-ai-stream-output></pre>
+    </div>
+  </article>
+  <nav class="workflow-nav" aria-label="Career workflow navigation">
+    <a class="workflow-nav-link" href="{{ url_for('main.upload_cv') }}" aria-label="Back to My CV">
+      <span aria-hidden="true">&larr;</span> My CV
+    </a>
+    <a class="workflow-nav-link" href="{{ url_for('main.cover_letter') }}" aria-label="Continue to Cover Letter">
+      Cover Letter <span aria-hidden="true">&rarr;</span>
+    </a>
+  </nav>
 </div>
 {% endblock %}

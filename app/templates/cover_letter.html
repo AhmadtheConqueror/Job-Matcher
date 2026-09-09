@@ -14,9 +14,9 @@
   <form
     class="section-block mb-4"
     method="post"
-    data-ai-loading
-    data-loading-title="Drafting your cover letter"
-    data-loading-message="The AI is shaping your CV evidence and the role details into a polished draft."
+    data-ai-stream-form
+    data-ai-stream-kind="cover-letter"
+    data-ai-stream-url="{{ url_for('main.stream_cover_letter_page') }}"
   >
     <div class="row g-3">
       <div class="col-md-6">
@@ -58,9 +58,29 @@
       </div>
     </div>
     <div class="mt-3">
+      <button class="btn btn-outline-dark" type="button" data-ai-stream-stop hidden disabled>Stop</button>
       <button class="btn btn-dark" type="submit">Generate Letter</button>
     </div>
   </form>
+
+  <article class="section-block cover-letter-shell ai-stream-result" data-ai-stream-result="cover-letter" hidden>
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+      <h2 class="h5 mb-0">Draft</h2>
+      <div class="d-flex flex-wrap gap-2">
+        <button class="btn btn-outline-dark btn-sm" type="button" data-copy-target="#coverLetterStreamPlainText" hidden>Copy Text</button>
+        <form method="post" action="{{ url_for('main.download_cover_letter') }}" data-ai-stream-download-form hidden>
+          <input type="hidden" name="letter_payload" data-ai-stream-letter-payload>
+          <input type="hidden" name="letter_text" data-ai-stream-letter-text>
+          <input type="hidden" name="role_title" data-ai-stream-role-title>
+          <input type="hidden" name="company" data-ai-stream-company>
+          <button class="btn btn-outline-dark btn-sm" type="submit">Download PDF</button>
+        </form>
+      </div>
+    </div>
+    <div class="chat-stream-status mb-3" data-ai-stream-status aria-live="polite"></div>
+    <div class="letter-preview ai-stream-output" data-ai-stream-output></div>
+    <textarea class="visually-hidden" id="coverLetterStreamPlainText" data-ai-stream-copy-source readonly></textarea>
+  </article>
 
   {% if generated_letter %}
     <article class="section-block cover-letter-shell">
@@ -120,5 +140,11 @@
       <textarea class="visually-hidden" id="coverLetterPlainText" readonly>{{ letter_text }}</textarea>
     </article>
   {% endif %}
+  <nav class="workflow-nav" aria-label="Career workflow navigation">
+    <a class="workflow-nav-link" href="{{ url_for('main.match_job') }}" aria-label="Back to Job Match">
+      <span aria-hidden="true">&larr;</span> Job Match
+    </a>
+    <span class="workflow-nav-spacer" aria-hidden="true"></span>
+  </nav>
 </div>
 {% endblock %}

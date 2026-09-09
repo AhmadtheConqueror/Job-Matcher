@@ -1,15 +1,16 @@
 {% extends "base.html" %}
 
-{% block title %}Evaluations | AI Career Assistant{% endblock %}
+{% block title %}AI Evaluation Console | AI Career Assistant{% endblock %}
 
 {% block content %}
 <div class="container evaluation-page">
   <div class="page-heading">
     <div>
       <p class="eyebrow">V3 evaluation</p>
-      <h1 class="h2 mb-0">Evaluation Dashboard</h1>
+      <h1 class="h2 mb-0">AI Evaluation Console</h1>
+      <p class="text-secondary mb-0">Internal admin view for prompt, feedback, and training-data review.</p>
     </div>
-    <a class="btn btn-dark" href="{{ url_for('main.download_training_data') }}">Download JSONL</a>
+    <a class="btn btn-dark" href="{{ url_for('main.download_admin_training_data') }}">Download JSONL</a>
   </div>
 
   <div class="stats-grid mb-4">

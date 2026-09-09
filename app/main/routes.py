@@ -13,12 +13,14 @@ from flask import (
     request,
     Response,
     send_file,
+    stream_with_context,
     url_for,
 )
 from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
 from app import db
+from app.auth.admin import admin_required
 from app.models import (
     AnalysisResult,
     CV,
@@ -38,6 +40,12 @@ from app.services.ai import (
     generate_interview_prep,
     generate_skill_gap_plan,
     is_ai_error_response,
+    stream_career_roadmap,
+    stream_cover_letter_text,
+    stream_cv_analysis_against_job,
+    stream_cv_tailoring_plan,
+    stream_interview_prep,
+    stream_skill_gap_plan,
 )
 from app.services.cover_letter import (
     LENGTH_OPTIONS,
@@ -45,10 +53,12 @@ from app.services.cover_letter import (
     cover_letter_to_text,
     deserialize_cover_letter,
     normalize_cover_letter,
+    parse_cover_letter_response,
     serialize_cover_letter,
 )
 from app.services.cv_parser import extract_text_from_file
-from app.services.chatbot import generate_chat_reply
+from app.services.gemini_client import describe_gemini_error
+from app.services.chatbot import finalize_chat_reply, generate_chat_reply, stream_chat_reply
 from app.services.evaluation import (
     build_anonymized_training_jsonl,
     build_evaluation_dashboard,
@@ -73,6 +83,201 @@ from app.services.text_formatting import format_text_blocks
 
 main_bp = Blueprint("main", __name__)
 MAX_CHAT_JOB_DESCRIPTION_LENGTH = 12000
+NO_STREAM_TEXT_MESSAGE = "No response was returned. Please try again."
+STREAM_MIMETYPE = "application/x-ndjson; charset=utf-8"
+
+
+def _wants_stream(data=None):
+    accept = request.headers.get("Accept", "")
+    data = data or {}
+    return "application/x-ndjson" in accept or bool(data.get("stream"))
+
+
+def _stream_json(event_type, **payload):
+    payload = {"type": event_type, **payload}
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _stream_headers():
+    return {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+
+def _stream_text_response(
+    response_stream,
+    finish_response,
+    error_payload,
+    log_message,
+):
+    @stream_with_context
+    def generate():
+        text_parts = []
+        yield _stream_json("status", message="Receiving response...")
+
+        try:
+            for chunk in response_stream:
+                text = str(chunk or "")
+                if not text:
+                    continue
+                text_parts.append(text)
+                yield _stream_json("chunk", text=text)
+        except GeneratorExit:
+            db.session.rollback()
+            raise
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.exception(log_message)
+            yield _stream_json(
+                "error",
+                error=describe_gemini_error(exc),
+                **error_payload(),
+            )
+            return
+
+        response_text = "".join(text_parts).strip()
+        if not response_text:
+            db.session.rollback()
+            yield _stream_json(
+                "error",
+                error=NO_STREAM_TEXT_MESSAGE,
+                **error_payload(),
+            )
+            return
+        if is_ai_error_response(response_text):
+            db.session.rollback()
+            yield _stream_json(
+                "error",
+                error=response_text,
+                **error_payload(),
+            )
+            return
+
+        try:
+            payload = finish_response(response_text)
+        except GeneratorExit:
+            db.session.rollback()
+            raise
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.exception("Could not save streamed assistant response")
+            yield _stream_json(
+                "error",
+                error=(
+                    "The assistant response was generated but could not be saved. "
+                    "Please try again."
+                ),
+                **error_payload(),
+            )
+            return
+
+        yield _stream_json("done", **payload)
+
+    return Response(
+        generate(),
+        content_type=STREAM_MIMETYPE,
+        headers=_stream_headers(),
+    )
+
+
+def _prepare_chat_action_context(data, title_seed):
+    conversation_id = data.get("conversation_id")
+    has_job_description_input = "job_description" in data
+    job_description = (data.get("job_description") or "").strip()
+
+    if len(job_description) > MAX_CHAT_JOB_DESCRIPTION_LENGTH:
+        return None, (
+            jsonify(
+                {
+                    "error": (
+                        "Keep the job description under "
+                        f"{MAX_CHAT_JOB_DESCRIPTION_LENGTH:,} characters."
+                    )
+                }
+            ),
+            400,
+        )
+
+    if conversation_id:
+        conversation = ChatConversation.query.filter_by(
+            id=conversation_id,
+            user_id=current_user.id,
+        ).first()
+        if conversation is None:
+            return None, (jsonify({"error": "Conversation not found."}), 404)
+    else:
+        conversation = ChatConversation(
+            user_id=current_user.id,
+            title=_chat_title_from_message(title_seed),
+        )
+        db.session.add(conversation)
+        db.session.flush()
+
+    if has_job_description_input:
+        if job_description:
+            _upsert_chat_context(
+                conversation,
+                kind="job_description",
+                title="Job description",
+                content=job_description,
+            )
+        else:
+            _delete_chat_context(conversation, kind="job_description")
+
+    active_job_context = _get_chat_context(conversation, kind="job_description")
+    active_job_description = active_job_context.content if active_job_context else ""
+    latest_cv = (
+        CV.query.filter_by(user_id=current_user.id)
+        .order_by(CV.created_at.desc())
+        .first()
+    )
+
+    return {
+        "conversation": conversation,
+        "active_job_description": active_job_description,
+        "latest_cv": latest_cv,
+    }, None
+
+
+def _save_chat_action_user_message(conversation, content):
+    user_record = ChatMessage(
+        conversation_id=conversation.id,
+        user_id=current_user.id,
+        role="user",
+        content=content,
+    )
+    conversation.updated_at = utc_now()
+    db.session.add(user_record)
+    db.session.commit()
+    return user_record
+
+
+def _save_chat_assistant_message(conversation, content, metadata):
+    assistant_record = ChatMessage(
+        conversation_id=conversation.id,
+        user_id=current_user.id,
+        role="assistant",
+        content=content,
+        metadata_json=json.dumps(metadata),
+    )
+    conversation.updated_at = utc_now()
+    db.session.add(assistant_record)
+    db.session.commit()
+    return assistant_record
+
+
+def _chat_stream_error_payload(conversation, user_record=None):
+    payload = {
+        "conversation": _serialize_conversation(conversation),
+        "job_context": _serialize_chat_job_context(
+            conversation,
+            include_content=True,
+        ),
+    }
+    if user_record is not None:
+        payload["user_message"] = _serialize_message(user_record)
+    return payload
 
 
 @main_bp.route("/")
@@ -101,15 +306,21 @@ def dashboard():
 
 
 @main_bp.route("/evaluations")
-@login_required
+@admin_required
 def evaluations():
+    return redirect(url_for("main.admin_evaluations"))
+
+
+@main_bp.route("/admin/evaluations")
+@admin_required
+def admin_evaluations():
     dashboard_data = build_evaluation_dashboard(current_user)
     return render_template("evaluations.html", dashboard=dashboard_data)
 
 
-@main_bp.route("/evaluations/training-data.jsonl")
-@login_required
-def download_training_data():
+@main_bp.route("/admin/evaluations/training-data.jsonl")
+@admin_required
+def download_admin_training_data():
     jsonl = build_anonymized_training_jsonl(current_user)
     return Response(
         jsonl,
@@ -118,6 +329,12 @@ def download_training_data():
             "Content-Disposition": "attachment; filename=training-data.jsonl",
         },
     )
+
+
+@main_bp.route("/evaluations/training-data.jsonl")
+@admin_required
+def download_training_data():
+    return redirect(url_for("main.download_admin_training_data"))
 
 
 @main_bp.route("/chat")
@@ -228,6 +445,29 @@ def chat_conversation_detail(conversation_id):
     )
 
 
+@main_bp.route("/api/chat/conversations/<int:conversation_id>", methods=["PATCH"])
+@login_required
+def update_chat_conversation(conversation_id):
+    data = request.get_json(silent=True) or {}
+    conversation = ChatConversation.query.filter_by(
+        id=conversation_id,
+        user_id=current_user.id,
+    ).first()
+
+    if conversation is None:
+        return jsonify({"error": "Conversation not found."}), 404
+
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Enter a conversation title."}), 400
+
+    conversation.title = title[:180]
+    conversation.updated_at = utc_now()
+    db.session.add(conversation)
+    db.session.commit()
+    return jsonify({"conversation": _serialize_conversation(conversation)})
+
+
 @main_bp.route("/api/chat/conversations/<int:conversation_id>", methods=["DELETE"])
 @login_required
 def delete_chat_conversation(conversation_id):
@@ -248,6 +488,9 @@ def delete_chat_conversation(conversation_id):
 @login_required
 def post_chat_message():
     data = request.get_json(silent=True) or {}
+    if _wants_stream(data):
+        return _stream_post_chat_message(data)
+
     user_message = (data.get("message") or "").strip()
     conversation_id = data.get("conversation_id")
     include_latest_cv = bool(data.get("include_latest_cv", True))
@@ -410,10 +653,195 @@ def post_chat_message():
     )
 
 
+def _stream_post_chat_message(data):
+    user_message = (data.get("message") or "").strip()
+    conversation_id = data.get("conversation_id")
+    include_latest_cv = bool(data.get("include_latest_cv", True))
+    try:
+        cv_id = int(data["cv_id"]) if data.get("cv_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Selected CV was not found."}), 400
+    has_job_description_input = "job_description" in data
+    job_description = (data.get("job_description") or "").strip()
+
+    if cv_id and not CV.query.filter_by(id=cv_id, user_id=current_user.id).first():
+        return jsonify({"error": "Selected CV was not found."}), 404
+
+    if not user_message:
+        return jsonify({"error": "Write a message before sending."}), 400
+    if len(user_message) > 8000:
+        return jsonify({"error": "Keep each message under 8,000 characters."}), 400
+    if len(job_description) > MAX_CHAT_JOB_DESCRIPTION_LENGTH:
+        return jsonify(
+            {
+                "error": (
+                    "Keep the job description under "
+                    f"{MAX_CHAT_JOB_DESCRIPTION_LENGTH:,} characters."
+                )
+            }
+        ), 400
+
+    if conversation_id:
+        conversation = ChatConversation.query.filter_by(
+            id=conversation_id,
+            user_id=current_user.id,
+        ).first()
+        if conversation is None:
+            return jsonify({"error": "Conversation not found."}), 404
+    else:
+        conversation = ChatConversation(
+            user_id=current_user.id,
+            title=_chat_title_from_message(user_message),
+        )
+        db.session.add(conversation)
+        db.session.flush()
+
+    if has_job_description_input:
+        if job_description:
+            _upsert_chat_context(
+                conversation,
+                kind="job_description",
+                title="Job description",
+                content=job_description,
+            )
+        else:
+            _delete_chat_context(conversation, kind="job_description")
+
+    active_job_context = _get_chat_context(conversation, kind="job_description")
+    active_job_description = active_job_context.content if active_job_context else ""
+
+    history = (
+        ChatMessage.query.filter_by(conversation_id=conversation.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(8)
+        .all()
+    )
+    history = list(reversed(history))
+
+    if conversation.title == "New chat":
+        conversation.title = _chat_title_from_message(user_message)
+
+    user_record = ChatMessage(
+        conversation_id=conversation.id,
+        user_id=current_user.id,
+        role="user",
+        content=user_message,
+    )
+    conversation.updated_at = utc_now()
+    db.session.add(user_record)
+    db.session.commit()
+
+    try:
+        response_stream, reply_request = stream_chat_reply(
+            current_user,
+            conversation,
+            user_message,
+            include_latest_cv=include_latest_cv,
+            cv_id=cv_id,
+            history=history,
+            job_description=active_job_description,
+        )
+    except Exception as exc:
+        current_app.logger.exception("Gemini chatbot request failed")
+        return jsonify(
+            {
+                "error": describe_gemini_error(exc),
+                "conversation": _serialize_conversation(conversation),
+                "user_message": _serialize_message(user_record),
+                "job_context": _serialize_chat_job_context(
+                    conversation,
+                    include_content=True,
+                ),
+            }
+        ), 502
+
+    def error_payload():
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+        }
+
+    def finish_response(reply):
+        result = finalize_chat_reply(reply_request, user_message, reply)
+        tracked_skill_gaps = []
+        if (
+            active_job_description
+            and _chat_requests_skill_gap_tracking(user_message)
+        ):
+            latest_cv = _selected_chat_cv(cv_id)
+            if latest_cv is not None:
+                tracked_skill_gaps = track_skill_gaps_from_text(
+                    current_user.id,
+                    latest_cv.text,
+                    active_job_description,
+                    source="Chat skill gap discussion",
+                )
+
+        assistant_record = ChatMessage(
+            conversation_id=conversation.id,
+            user_id=current_user.id,
+            role="assistant",
+            content=reply,
+            metadata_json=json.dumps(
+                {
+                    "suggested_actions": result["suggested_actions"],
+                    "include_latest_cv": include_latest_cv,
+                    "used_latest_cv": result["used_latest_cv"],
+                    "latest_cv_filename": result["latest_cv_filename"],
+                    "detected_skills": result["detected_skills"],
+                    "used_job_description": result["used_job_description"],
+                    "job_description_excerpt": result["job_description_excerpt"],
+                    "prompt_version": result["prompt_version"],
+                    "provider": result["provider"],
+                    "tracked_skill_gaps": [
+                        gap.skill for gap in tracked_skill_gaps
+                    ],
+                }
+            ),
+        )
+        conversation.updated_at = utc_now()
+        db.session.add(assistant_record)
+        db.session.commit()
+
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "assistant_message": _serialize_message(assistant_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+            "reply": reply,
+            "suggested_actions": result["suggested_actions"],
+            "used_latest_cv": result["used_latest_cv"],
+            "latest_cv_filename": result["latest_cv_filename"],
+            "detected_skills": result["detected_skills"],
+            "used_job_description": result["used_job_description"],
+            "job_description_excerpt": result["job_description_excerpt"],
+            "skill_gaps": [
+                serialize_skill_gap(gap) for gap in tracked_skill_gaps
+            ],
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        error_payload,
+        "Gemini chatbot stream failed",
+    )
+
+
 @main_bp.route("/api/chat/actions/cover-letter", methods=["POST"])
 @login_required
 def chat_cover_letter_action():
     data = request.get_json(silent=True) or {}
+    if _wants_stream(data):
+        return _stream_chat_cover_letter_action(data)
+
     conversation_id = data.get("conversation_id")
     role_title = (data.get("role_title") or "").strip()
     company = (data.get("company") or "").strip()
@@ -618,6 +1046,9 @@ def download_chat_cover_letter(message_id):
 @login_required
 def chat_cv_tailoring_plan_action():
     data = request.get_json(silent=True) or {}
+    if _wants_stream(data):
+        return _stream_chat_cv_tailoring_plan_action(data)
+
     conversation_id = data.get("conversation_id")
     role_title = (data.get("role_title") or "").strip()
     company = (data.get("company") or "").strip()
@@ -794,6 +1225,9 @@ def download_chat_cv_tailoring_plan(message_id):
 @login_required
 def chat_interview_prep_action():
     data = request.get_json(silent=True) or {}
+    if _wants_stream(data):
+        return _stream_chat_interview_prep_action(data)
+
     conversation_id = data.get("conversation_id")
     role_title = (data.get("role_title") or "").strip()
     company = (data.get("company") or "").strip()
@@ -931,6 +1365,9 @@ def chat_interview_prep_action():
 @login_required
 def chat_skill_gap_plan_action():
     data = request.get_json(silent=True) or {}
+    if _wants_stream(data):
+        return _stream_chat_skill_gap_plan_action(data)
+
     conversation_id = data.get("conversation_id")
     role_title = (data.get("role_title") or "").strip()
     company = (data.get("company") or "").strip()
@@ -1087,6 +1524,9 @@ def chat_skill_gap_plan_action():
 @login_required
 def chat_career_roadmap_action():
     data = request.get_json(silent=True) or {}
+    if _wants_stream(data):
+        return _stream_chat_career_roadmap_action(data)
+
     conversation_id = data.get("conversation_id")
     target_role = (data.get("target_role") or data.get("role_title") or "").strip()
     company = (data.get("company") or "").strip()
@@ -1217,6 +1657,418 @@ def chat_career_roadmap_action():
                 include_content=True,
             ),
         }
+    )
+
+
+def _stream_chat_cover_letter_action(data):
+    role_title = (data.get("role_title") or "").strip()
+    company = (data.get("company") or "").strip()
+    selected_style = data.get("letter_style", "professional")
+    selected_length = data.get("letter_length", "standard")
+
+    if selected_style not in STYLE_OPTIONS:
+        selected_style = "professional"
+    if selected_length not in LENGTH_OPTIONS:
+        selected_length = "standard"
+
+    context, error_response = _prepare_chat_action_context(
+        data,
+        "Generate cover letter",
+    )
+    if error_response:
+        return error_response
+
+    conversation = context["conversation"]
+    latest_cv = context["latest_cv"]
+    active_job_description = context["active_job_description"]
+
+    if latest_cv is None:
+        return jsonify({"error": "Upload a CV before generating a cover letter."}), 400
+    if not role_title:
+        return jsonify({"error": "Add the role title before generating a cover letter."}), 400
+    if not active_job_description:
+        return jsonify(
+            {"error": "Paste a job description before generating a cover letter."}
+        ), 400
+
+    action_text = f"Generate a cover letter for {role_title}"
+    if company:
+        action_text = f"{action_text} at {company}"
+    action_text = f"{action_text}."
+    user_record = _save_chat_action_user_message(conversation, action_text)
+    response_stream = stream_cover_letter_text(
+        latest_cv.text,
+        role_title,
+        company,
+        active_job_description,
+        style=selected_style,
+        length=selected_length,
+    )
+
+    def finish_response(reply):
+        generated_letter = parse_cover_letter_response(
+            reply,
+            role_title,
+            company,
+        )
+        generated_letter = normalize_cover_letter(
+            generated_letter,
+            role_title=role_title,
+            company=company,
+        )
+        assistant_record = _save_chat_assistant_message(
+            conversation,
+            reply,
+            {
+                "suggested_actions": [
+                    "Make this cover letter shorter",
+                    "Make it more specific",
+                    "Prepare interview questions",
+                ],
+                "tool_action": "cover_letter",
+                "cover_letter_payload": serialize_cover_letter(generated_letter),
+                "role_title": role_title,
+                "company": company,
+                "letter_style": selected_style,
+                "letter_length": selected_length,
+                "latest_cv_filename": latest_cv.original_filename,
+                "used_latest_cv": True,
+                "used_job_description": True,
+                "job_description_excerpt": _text_excerpt(
+                    active_job_description,
+                    limit=180,
+                ),
+                "prompt_version": prompt_version("cover_letter"),
+                "provider": current_app.config.get("AI_PROVIDER", "gemini"),
+            },
+        )
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "assistant_message": _serialize_message(assistant_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: _chat_stream_error_payload(conversation, user_record),
+        "Gemini cover letter stream failed",
+    )
+
+
+def _stream_chat_cv_tailoring_plan_action(data):
+    role_title = (data.get("role_title") or "").strip()
+    company = (data.get("company") or "").strip()
+    context, error_response = _prepare_chat_action_context(
+        data,
+        "Create CV tailoring plan",
+    )
+    if error_response:
+        return error_response
+
+    conversation = context["conversation"]
+    latest_cv = context["latest_cv"]
+    active_job_description = context["active_job_description"]
+
+    if latest_cv is None:
+        return jsonify({"error": "Upload a CV before creating a CV plan."}), 400
+    if not active_job_description:
+        return jsonify({"error": "Paste a job description before creating a CV plan."}), 400
+
+    action_text = "Create a CV tailoring plan"
+    if role_title:
+        action_text = f"{action_text} for {role_title}"
+    if company:
+        action_text = f"{action_text} at {company}"
+    action_text = f"{action_text}."
+    user_record = _save_chat_action_user_message(conversation, action_text)
+    response_stream = stream_cv_tailoring_plan(
+        latest_cv.text,
+        active_job_description,
+        role_title=role_title,
+        company=company,
+    )
+
+    def finish_response(reply):
+        assistant_record = _save_chat_assistant_message(
+            conversation,
+            reply,
+            {
+                "suggested_actions": [
+                    "Generate cover letter",
+                    "Make this plan more detailed",
+                    "Prepare interview questions",
+                ],
+                "tool_action": "cv_tailoring_plan",
+                "role_title": role_title,
+                "company": company,
+                "latest_cv_filename": latest_cv.original_filename,
+                "used_latest_cv": True,
+                "used_job_description": True,
+                "job_description_excerpt": _text_excerpt(
+                    active_job_description,
+                    limit=180,
+                ),
+                "prompt_version": prompt_version("cv_tailoring_plan"),
+                "provider": current_app.config.get("AI_PROVIDER", "gemini"),
+            },
+        )
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "assistant_message": _serialize_message(assistant_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: _chat_stream_error_payload(conversation, user_record),
+        "Gemini CV tailoring plan stream failed",
+    )
+
+
+def _stream_chat_interview_prep_action(data):
+    role_title = (data.get("role_title") or "").strip()
+    company = (data.get("company") or "").strip()
+    context, error_response = _prepare_chat_action_context(
+        data,
+        "Prepare interview questions",
+    )
+    if error_response:
+        return error_response
+
+    conversation = context["conversation"]
+    latest_cv = context["latest_cv"]
+    active_job_description = context["active_job_description"]
+
+    if latest_cv is None:
+        return jsonify({"error": "Upload a CV before preparing interviews."}), 400
+
+    action_text = "Prepare interview questions"
+    if role_title:
+        action_text = f"{action_text} for {role_title}"
+    if company:
+        action_text = f"{action_text} at {company}"
+    action_text = f"{action_text}."
+    user_record = _save_chat_action_user_message(conversation, action_text)
+    response_stream = stream_interview_prep(
+        latest_cv.text,
+        active_job_description,
+        role_title=role_title,
+        company=company,
+    )
+
+    def finish_response(reply):
+        assistant_record = _save_chat_assistant_message(
+            conversation,
+            reply,
+            {
+                "suggested_actions": [
+                    "Identify skill gaps",
+                    "Create CV tailoring plan",
+                    "Generate cover letter",
+                ],
+                "tool_action": "interview_prep",
+                "role_title": role_title,
+                "company": company,
+                "latest_cv_filename": latest_cv.original_filename,
+                "used_latest_cv": True,
+                "used_job_description": bool(active_job_description),
+                "job_description_excerpt": _text_excerpt(
+                    active_job_description,
+                    limit=180,
+                ),
+                "prompt_version": prompt_version("interview_prep"),
+                "provider": current_app.config.get("AI_PROVIDER", "gemini"),
+            },
+        )
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "assistant_message": _serialize_message(assistant_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: _chat_stream_error_payload(conversation, user_record),
+        "Gemini interview preparation stream failed",
+    )
+
+
+def _stream_chat_skill_gap_plan_action(data):
+    role_title = (data.get("role_title") or "").strip()
+    company = (data.get("company") or "").strip()
+    context, error_response = _prepare_chat_action_context(
+        data,
+        "Identify skill gaps",
+    )
+    if error_response:
+        return error_response
+
+    conversation = context["conversation"]
+    latest_cv = context["latest_cv"]
+    active_job_description = context["active_job_description"]
+
+    if latest_cv is None:
+        return jsonify({"error": "Upload a CV before tracking skill gaps."}), 400
+    if not active_job_description:
+        return jsonify({"error": "Paste a job description before tracking skill gaps."}), 400
+
+    action_text = "Identify skill gaps"
+    if role_title:
+        action_text = f"{action_text} for {role_title}"
+    if company:
+        action_text = f"{action_text} at {company}"
+    action_text = f"{action_text}."
+    user_record = _save_chat_action_user_message(conversation, action_text)
+    tracked_gaps = track_skill_gaps_from_text(
+        current_user.id,
+        latest_cv.text,
+        active_job_description,
+        source="Chat skill gap plan",
+    )
+    response_stream = stream_skill_gap_plan(
+        latest_cv.text,
+        active_job_description,
+        tracked_skills=[gap.skill for gap in tracked_gaps],
+        role_title=role_title,
+        company=company,
+    )
+
+    def finish_response(reply):
+        db.session.flush()
+        assistant_record = _save_chat_assistant_message(
+            conversation,
+            reply,
+            {
+                "suggested_actions": [
+                    "Create CV tailoring plan",
+                    "Prepare interview questions",
+                    "Create career roadmap",
+                ],
+                "tool_action": "skill_gap_plan",
+                "role_title": role_title,
+                "company": company,
+                "tracked_skills": [
+                    serialize_skill_gap(gap)
+                    for gap in tracked_gaps
+                ],
+                "latest_cv_filename": latest_cv.original_filename,
+                "used_latest_cv": True,
+                "used_job_description": True,
+                "job_description_excerpt": _text_excerpt(
+                    active_job_description,
+                    limit=180,
+                ),
+                "prompt_version": prompt_version("skill_gap_plan"),
+                "provider": current_app.config.get("AI_PROVIDER", "gemini"),
+            },
+        )
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "assistant_message": _serialize_message(assistant_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+            "skill_gaps": [
+                serialize_skill_gap(gap)
+                for gap in tracked_gaps
+            ],
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: _chat_stream_error_payload(conversation, user_record),
+        "Gemini skill gap plan stream failed",
+    )
+
+
+def _stream_chat_career_roadmap_action(data):
+    target_role = (data.get("target_role") or data.get("role_title") or "").strip()
+    company = (data.get("company") or "").strip()
+    context, error_response = _prepare_chat_action_context(
+        data,
+        "Create career roadmap",
+    )
+    if error_response:
+        return error_response
+
+    conversation = context["conversation"]
+    latest_cv = context["latest_cv"]
+    active_job_description = context["active_job_description"]
+
+    if latest_cv is None:
+        return jsonify({"error": "Upload a CV before creating a roadmap."}), 400
+
+    action_text = "Create a career roadmap"
+    if target_role:
+        action_text = f"{action_text} for {target_role}"
+    if company:
+        action_text = f"{action_text} at {company}"
+    action_text = f"{action_text}."
+    user_record = _save_chat_action_user_message(conversation, action_text)
+    response_stream = stream_career_roadmap(
+        latest_cv.text,
+        target_role=target_role,
+        job_text=active_job_description,
+        company=company,
+    )
+
+    def finish_response(reply):
+        assistant_record = _save_chat_assistant_message(
+            conversation,
+            reply,
+            {
+                "suggested_actions": [
+                    "Identify skill gaps",
+                    "Create CV tailoring plan",
+                    "Prepare interview questions",
+                ],
+                "tool_action": "career_roadmap",
+                "role_title": target_role,
+                "company": company,
+                "latest_cv_filename": latest_cv.original_filename,
+                "used_latest_cv": True,
+                "used_job_description": bool(active_job_description),
+                "job_description_excerpt": _text_excerpt(
+                    active_job_description,
+                    limit=180,
+                ),
+                "prompt_version": prompt_version("career_roadmap"),
+                "provider": current_app.config.get("AI_PROVIDER", "gemini"),
+            },
+        )
+        return {
+            "conversation": _serialize_conversation(conversation),
+            "user_message": _serialize_message(user_record),
+            "assistant_message": _serialize_message(assistant_record),
+            "job_context": _serialize_chat_job_context(
+                conversation,
+                include_content=True,
+            ),
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: _chat_stream_error_payload(conversation, user_record),
+        "Gemini career roadmap stream failed",
     )
 
 
@@ -1413,6 +2265,61 @@ def match_job():
     return render_template("match.html", cvs=cvs)
 
 
+@main_bp.route("/api/match/stream", methods=["POST"])
+@login_required
+def stream_match_job():
+    data = request.get_json(silent=True) or {}
+    try:
+        cv_id = int(data["cv_id"]) if data.get("cv_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Choose a valid CV."}), 400
+
+    title = (data.get("title") or "").strip()
+    company = (data.get("company") or "").strip()
+    description = (data.get("description") or "").strip()
+    cv = CV.query.filter_by(id=cv_id, user_id=current_user.id).first()
+
+    if not cv or not title or not description:
+        return jsonify({"error": "Choose a CV and add the job title and description."}), 400
+
+    job = JobDescription(
+        user_id=current_user.id,
+        title=title,
+        company=company,
+        description=description,
+    )
+    db.session.add(job)
+    db.session.flush()
+    response_stream = stream_cv_analysis_against_job(cv.text, description)
+
+    def finish_response(result_text):
+        analysis = AnalysisResult(
+            user_id=current_user.id,
+            cv_id=cv.id,
+            job_description_id=job.id,
+            result_text=result_text,
+        )
+        db.session.add(analysis)
+        db.session.commit()
+        return {
+            "result": {
+                "id": analysis.id,
+                "url": url_for("main.result_detail", result_id=analysis.id),
+                "download_url": url_for(
+                    "main.download_result_pdf",
+                    result_id=analysis.id,
+                ),
+            }
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: {},
+        "Gemini job-match stream failed",
+    )
+
+
 @main_bp.route("/results/<int:result_id>")
 @login_required
 def result_detail(result_id):
@@ -1515,6 +2422,67 @@ def cover_letter():
         length_options=LENGTH_OPTIONS,
         selected_style=selected_style,
         selected_length=selected_length,
+    )
+
+
+@main_bp.route("/api/cover-letter/stream", methods=["POST"])
+@login_required
+def stream_cover_letter_page():
+    data = request.get_json(silent=True) or {}
+    try:
+        cv_id = int(data["cv_id"]) if data.get("cv_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Choose a valid CV."}), 400
+
+    title = (data.get("title") or "").strip()
+    company = (data.get("company") or "").strip()
+    description = (data.get("description") or "").strip()
+    selected_style = data.get("letter_style", "professional")
+    selected_length = data.get("letter_length", "standard")
+
+    if selected_style not in STYLE_OPTIONS:
+        selected_style = "professional"
+    if selected_length not in LENGTH_OPTIONS:
+        selected_length = "standard"
+
+    cv = CV.query.filter_by(id=cv_id, user_id=current_user.id).first()
+    if not cv or not title or not description:
+        return jsonify({"error": "Choose a CV and add the role details."}), 400
+
+    response_stream = stream_cover_letter_text(
+        cv.text,
+        title,
+        company,
+        description,
+        style=selected_style,
+        length=selected_length,
+    )
+
+    def finish_response(letter_text):
+        generated_letter = parse_cover_letter_response(
+            letter_text,
+            title,
+            company,
+        )
+        generated_letter = normalize_cover_letter(
+            generated_letter,
+            role_title=title,
+            company=company,
+        )
+        return {
+            "letter": {
+                "text": letter_text,
+                "payload": serialize_cover_letter(generated_letter),
+                "role_title": title,
+                "company": company,
+            }
+        }
+
+    return _stream_text_response(
+        response_stream,
+        finish_response,
+        lambda: {},
+        "Gemini cover letter page stream failed",
     )
 
 

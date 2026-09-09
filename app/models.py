@@ -37,6 +37,12 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
+    @property
+    def is_admin(self):
+        from app.auth.admin import is_admin_email
+
+        return is_admin_email(self.email)
+
 
 class CV(db.Model):
     id = db.Column(db.Integer, primary_key=True)

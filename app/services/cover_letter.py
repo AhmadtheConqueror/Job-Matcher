@@ -27,6 +27,13 @@ PARAGRAPH_FIELDS = (
     "closing_paragraph",
 )
 
+SIGN_OFFS = {
+    "sincerely,",
+    "kind regards,",
+    "best regards,",
+    "regards,",
+}
+
 STYLE_OPTIONS = {
     "professional": "Professional",
     "concise": "Concise",
@@ -144,25 +151,62 @@ def _load_json_object(response_text):
 
 
 def _fallback_from_plain_text(response_text, role_title="", company=""):
-    paragraphs = [
-        _clean_value(paragraph)
+    raw_paragraphs = [
+        paragraph.strip()
         for paragraph in re.split(r"\n\s*\n", response_text or "")
         if _clean_value(paragraph)
     ]
-    paragraphs = [
+    raw_paragraphs = [
         paragraph
-        for paragraph in paragraphs
-        if paragraph.lower().strip(":") not in {"cover letter", "draft", "letter"}
+        for paragraph in raw_paragraphs
+        if _clean_value(paragraph).lower().strip(":") not in {"cover letter", "draft", "letter"}
     ]
 
     letter = normalize_cover_letter({}, role_title=role_title, company=company)
-    if paragraphs and paragraphs[0].lower().startswith("dear "):
-        letter["salutation"] = paragraphs.pop(0)
+    if raw_paragraphs and _clean_value(raw_paragraphs[0]).lower().startswith("dear "):
+        letter["salutation"] = _clean_value(raw_paragraphs.pop(0))
 
+    if raw_paragraphs:
+        sign_off = _extract_sign_off(raw_paragraphs[-1])
+        if sign_off:
+            letter["sign_off"] = sign_off["sign_off"]
+            letter["candidate_name_signature"] = sign_off["signature"]
+            raw_paragraphs.pop()
+
+    paragraphs = [_clean_value(paragraph) for paragraph in raw_paragraphs]
     for field, paragraph in zip(PARAGRAPH_FIELDS, paragraphs[:4]):
         letter[field] = paragraph
 
     return letter
+
+
+def _extract_sign_off(paragraph):
+    lines = [
+        _clean_value(line)
+        for line in str(paragraph or "").splitlines()
+        if _clean_value(line)
+    ]
+    if not lines:
+        return None
+
+    first_line = lines[0].lower()
+    if first_line in SIGN_OFFS:
+        return {
+            "sign_off": lines[0],
+            "signature": " ".join(lines[1:]),
+        }
+
+    text = _clean_value(paragraph)
+    lower_text = text.lower()
+    for sign_off in SIGN_OFFS:
+        if lower_text.startswith(sign_off):
+            signature = text[len(sign_off):].strip(" ,")
+            return {
+                "sign_off": text[: len(sign_off)],
+                "signature": signature,
+            }
+
+    return None
 
 
 def _clean_value(value):

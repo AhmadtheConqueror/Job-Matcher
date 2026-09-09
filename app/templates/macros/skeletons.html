@@ -1,0 +1,44 @@
+{% macro text(width="100%", class_name="") -%}
+  <span class="skeleton skeleton-text {{ class_name }}" style="--skeleton-width: {{ width }}" aria-hidden="true"></span>
+{%- endmacro %}
+
+{% macro title(width="58%") -%}
+  <span class="skeleton skeleton-title" style="--skeleton-width: {{ width }}" aria-hidden="true"></span>
+{%- endmacro %}
+
+{% macro card() -%}
+  <div class="skeleton-card" aria-hidden="true">
+    {{ title("42%") }}
+    {{ text("72%") }}
+    {{ text("52%") }}
+  </div>
+{%- endmacro %}
+
+{% macro row() -%}
+  <div class="skeleton-row" aria-hidden="true">
+    <span class="skeleton skeleton-avatar"></span>
+    <span class="skeleton-row-copy">
+      {{ text("68%") }}
+      {{ text("44%") }}
+    </span>
+  </div>
+{%- endmacro %}
+
+{% macro button(width="112px") -%}
+  <span class="skeleton skeleton-button" style="--skeleton-width: {{ width }}" aria-hidden="true"></span>
+{%- endmacro %}
+
+{% macro conversation() -%}
+  <div class="skeleton-conversation" aria-hidden="true">
+    {{ title("68%") }}
+    {{ text("82%") }}
+  </div>
+{%- endmacro %}
+
+{% macro message() -%}
+  <div class="skeleton-message" aria-hidden="true">
+    {{ text("56%", "skeleton-text-short") }}
+    <span class="skeleton skeleton-message-line"></span>
+    <span class="skeleton skeleton-message-line skeleton-message-line-short"></span>
+  </div>
+{%- endmacro %}

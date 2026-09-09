@@ -7,12 +7,25 @@ job applications.
 
 Behavior:
 - Be supportive, practical, and professional.
+- Be conversational, context-aware, and direct. Prefer acting on supplied
+  context over sounding like a workflow engine.
 - Do not simply agree with the user.
 - Give constructive feedback when an application, CV, experience, or strategy
   could be stronger.
 - Explain why you recommend something.
 - Keep ordinary conversational responses concise unless the user asks for detail.
-- Ask follow-up questions only when important information is genuinely missing.
+- Ask follow-up questions only when important information is genuinely missing
+  or the user's intent is genuinely ambiguous.
+- Resolve references such as "the CV", "this document", "the job", "those
+  roles", and "the attachment" against the supplied active CV, attached
+  documents, job context, and recent conversation before asking for anything.
+- Never ask the user to resend content that appears in the supplied context.
+- If one document is plausible, use it. If several roles are present in one
+  document and the user asks for the best fit, compare all of them.
+- Treat instructions such as "don't evaluate yet" or "hold off" as an active
+  constraint until the user clearly tells you to continue.
+- Use concise natural acknowledgments. Do not repeatedly restate the request,
+  say "standing by", or ask the user to paste supplied content.
 
 Use of student information:
 - Use supplied student context to personalize advice.
@@ -56,9 +69,33 @@ def build_chat_prompt(
     student_context,
     history_messages=None,
     job_description=None,
+    conversation_context=None,
 ):
     history = _format_history(history_messages or [])
     context_text = student_context.get("text") or "No student context was provided."
+    documents_text = "No attached documents were provided."
+    active_cv_text = "No active CV was provided."
+    held_instruction = ""
+    if conversation_context is not None:
+      active_cv = conversation_context.active_cv
+      context_text = _without_repeated_cv_summary(context_text)
+      if active_cv:
+        active_cv_text = (
+          f"Filename: {active_cv['filename']}\n"
+          f"Extracted CV text:\n{active_cv['text']}"
+        )
+      if conversation_context.attached_documents:
+        documents_text = "\n\n".join(
+          (
+            f"[{document.document_type}] {document.title}\n"
+            f"{document.content}"
+          )
+          for document in conversation_context.attached_documents
+          if document.document_type != "job_description"
+        )
+        if not documents_text:
+          documents_text = "No supporting documents were provided."
+      held_instruction = conversation_context.held_instruction
     job_context_text = (
         job_description.strip()
         if job_description
@@ -94,6 +131,15 @@ RECENT CONVERSATION
 
 CURRENT USER MESSAGE
 {user_message}
+
+ACTIVE CV
+{active_cv_text}
+
+ATTACHED / SAVED DOCUMENTS
+{documents_text}
+
+HELD USER INSTRUCTION
+{held_instruction or "None"}
 
 Reply as the career assistant. Be specific, honest, and useful.
 """.strip()
@@ -136,3 +182,22 @@ def _format_history(messages):
         role = "Student" if message.role == "user" else "Assistant"
         lines.append(f"{role}: {message.content}")
     return "\n\n".join(lines)
+
+
+def _without_repeated_cv_summary(context_text):
+    excluded_prefixes = (
+        "Selected CV:",
+        "Detected skills:",
+        "Skills section:",
+        "Education:",
+        "Experience:",
+        "Projects:",
+        "Certifications:",
+        "General CV evidence:",
+    )
+    lines = [
+        line
+        for line in context_text.splitlines()
+        if not line.startswith(excluded_prefixes)
+    ]
+    return "\n".join(lines).strip() or "No additional student context was provided."

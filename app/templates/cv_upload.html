@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}Upload CV | AI Career Assistant{% endblock %}
+{% block title %}My CV | AI Career Assistant{% endblock %}
 
 {% block content %}
 <div class="container narrow-page">
   <div class="form-shell">
-    <h1 class="h3 mb-3">Upload CV</h1>
+    <h1 class="h3 mb-3">My CV</h1>
     <form method="post" enctype="multipart/form-data">
       <div class="mb-3">
         <label class="form-label" for="cv_file">CV file</label>
@@ -15,6 +15,14 @@
       <button class="btn btn-dark w-100" type="submit">Upload and Parse</button>
     </form>
   </div>
+  <nav class="workflow-nav" aria-label="Career workflow navigation">
+    <a class="workflow-nav-link" href="{{ url_for('main.dashboard') }}" aria-label="Back to Dashboard">
+      <span aria-hidden="true">&larr;</span> Dashboard
+    </a>
+    <a class="workflow-nav-link" href="{{ url_for('main.match_job') }}" aria-label="Continue to Job Match">
+      Job Match <span aria-hidden="true">&rarr;</span>
+    </a>
+  </nav>
 </div>
 {% endblock %}
 

@@ -1,19 +1,12 @@
 from app.services.cover_letter import parse_cover_letter_response
 
 from flask import current_app
-from google import genai
-
-AI_REQUEST_FAILED_MESSAGE = (
-    "Gemini request failed. The app could not reach the AI service. "
-    "Check network/firewall permissions and try again."
+from app.services.gemini_client import (
+    describe_gemini_error,
+    generate_gemini_text,
+    generate_gemini_text_stream,
+    is_ai_error_response,
 )
-
-
-def _get_client():
-    api_key = current_app.config.get("GEMINI_API_KEY")
-    if not api_key or api_key == "paste-your-google-ai-studio-api-key-here":
-        return None
-    return genai.Client(api_key=api_key)
 
 
 def _placeholder_response(feature_name):
@@ -24,18 +17,18 @@ def _placeholder_response(feature_name):
     )
 
 
-def is_ai_error_response(text):
-    if not isinstance(text, str):
-        return False
-    return (text or "").startswith((AI_REQUEST_FAILED_MESSAGE, "AI request failed:"))
+def _stream_response(prompt, system_instruction="", feature_name="AI response"):
+    response_stream = generate_gemini_text_stream(
+        prompt,
+        system_instruction=system_instruction,
+    )
+    if response_stream is None:
+        return iter([_placeholder_response(feature_name)])
+    return response_stream
 
 
-def analyze_cv_against_job(cv_text, job_text):
-    client = _get_client()
-    if client is None:
-        return _placeholder_response("CV analysis")
-
-    prompt = f"""
+def _cv_analysis_prompt(cv_text, job_text):
+    return f"""
 Analyze this CV against the job description.
 
 Return clean Markdown only, using these exact headings:
@@ -56,42 +49,56 @@ Job description:
 {job_text}
 """
 
+
+def analyze_cv_against_job(cv_text, job_text):
+    prompt = _cv_analysis_prompt(cv_text, job_text)
+
     try:
-        response = client.models.generate_content(
-            model=current_app.config["GEMINI_MODEL"],
-            contents=(
-                "You are a practical, concise career assistant.\n\n"
-                f"{prompt}"
-            ),
+        response_text = generate_gemini_text(
+            prompt,
+            system_instruction="You are a practical, concise career assistant.",
         )
-        return response.text.strip()
-    except Exception:
+        if response_text is None:
+            return _placeholder_response("CV analysis")
+        return response_text
+    except Exception as exc:
         current_app.logger.exception("Gemini CV analysis request failed")
-        return AI_REQUEST_FAILED_MESSAGE
+        return describe_gemini_error(exc)
 
 
-def generate_cover_letter(cv_text, role_title, company, job_text, style="professional", length="standard"):
-    client = _get_client()
-    if client is None:
-        return _placeholder_response("Cover letter generation")
+def stream_cv_analysis_against_job(cv_text, job_text):
+    return _stream_response(
+        _cv_analysis_prompt(cv_text, job_text),
+        system_instruction="You are a practical, concise career assistant.",
+        feature_name="CV analysis",
+    )
 
+
+def _cover_letter_style_instruction(style):
     style_instructions = {
         "professional": "Use polished, direct professional language.",
         "concise": "Use especially tight, plain wording with no filler.",
         "warm": "Use a warmer personal tone while remaining professional and specific.",
     }
+    return style_instructions.get(style, style_instructions["professional"])
+
+
+def _cover_letter_length_instruction(length):
     length_instructions = {
         "short": "Aim for 250-300 words across 3 short body paragraphs.",
         "standard": "Aim for 300-400 words across 3-4 short body paragraphs.",
     }
+    return length_instructions.get(length, length_instructions["standard"])
 
-    prompt = f"""
+
+def _cover_letter_prompt(cv_text, role_title, company, job_text, style, length):
+    return f"""
 Create a concise, credible cover letter for a student or early-career applicant.
 
 Role: {role_title}
 Company: {company or "Not specified"}
-Style: {style_instructions.get(style, style_instructions["professional"])}
-Length: {length_instructions.get(length, length_instructions["standard"])}
+Style: {_cover_letter_style_instruction(style)}
+Length: {_cover_letter_length_instruction(length)}
 
 Use ONLY the candidate's CV and the supplied job description.
 
@@ -144,26 +151,93 @@ Job description:
 {job_text}
 """
 
+
+def _cover_letter_text_prompt(cv_text, role_title, company, job_text, style, length):
+    return f"""
+Create a concise, credible cover letter for a student or early-career applicant.
+
+Role: {role_title}
+Company: {company or "Not specified"}
+Style: {_cover_letter_style_instruction(style)}
+Length: {_cover_letter_length_instruction(length)}
+
+Use ONLY the candidate's CV and the supplied job description.
+
+Core rules:
+- Do not invent work experience, qualifications, projects, skills, achievements,
+  dates, company knowledge, awards, responsibilities, statistics, or URLs.
+- If a requirement is not directly supported by the CV, use related transferable
+  evidence instead of pretending the candidate has it.
+- Prioritize the 2-3 strongest pieces of evidence that match the role.
+- Explain why those experiences make the candidate suitable.
+- Sound like a capable student or early-career professional, not a senior executive.
+- Avoid generic AI phrases such as "strong interest", "results-oriented",
+  "proven track record", "ever-evolving landscape", "leverage my skills",
+  and repeated uses of "passionate".
+- Do not repeat the same skill in multiple paragraphs.
+- Do not use Markdown, headings, bullet points, square-bracket placeholders,
+  explanatory comments, or labels such as "Cover Letter:".
+- If the hiring manager's name is unknown, use "Dear Hiring Manager,".
+- Include portfolio, LinkedIn, or GitHub only if it appears in the CV.
+
+Return the finished cover letter as plain text only. Start with the salutation,
+then use short paragraphs and the sign-off. Do not return JSON.
+
+Before returning, silently check that the letter fits one page, contains no
+placeholders, and every factual claim is supported by the CV or job description.
+
+CV:
+{cv_text}
+
+Job description:
+{job_text}
+"""
+
+
+def generate_cover_letter(cv_text, role_title, company, job_text, style="professional", length="standard"):
+    prompt = _cover_letter_prompt(
+        cv_text,
+        role_title,
+        company,
+        job_text,
+        style,
+        length,
+    )
+
     try:
-        response = client.models.generate_content(
-            model=current_app.config["GEMINI_MODEL"],
-            contents=(
-                "You write polished, truthful cover letters and return valid JSON only.\n\n"
-                f"{prompt}"
+        response_text = generate_gemini_text(
+            prompt,
+            system_instruction=(
+                "You write polished, truthful cover letters and return valid JSON only."
             ),
         )
-        return parse_cover_letter_response(response.text, role_title, company)
-    except Exception:
+        if response_text is None:
+            return _placeholder_response("Cover letter generation")
+        return parse_cover_letter_response(response_text, role_title, company)
+    except Exception as exc:
         current_app.logger.exception("Gemini cover letter request failed")
-        return AI_REQUEST_FAILED_MESSAGE
+        return describe_gemini_error(exc)
 
 
-def generate_cv_tailoring_plan(cv_text, job_text, role_title="", company=""):
-    client = _get_client()
-    if client is None:
-        return _placeholder_response("CV tailoring plan")
+def stream_cover_letter_text(cv_text, role_title, company, job_text, style="professional", length="standard"):
+    return _stream_response(
+        _cover_letter_text_prompt(
+            cv_text,
+            role_title,
+            company,
+            job_text,
+            style,
+            length,
+        ),
+        system_instruction=(
+            "You write polished, truthful cover letters and return plain text only."
+        ),
+        feature_name="Cover letter generation",
+    )
 
-    prompt = f"""
+
+def _cv_tailoring_plan_prompt(cv_text, job_text, role_title="", company=""):
+    return f"""
 Create a practical CV tailoring plan for a student or early-career applicant.
 
 Role: {role_title or "Not specified"}
@@ -199,27 +273,49 @@ Job description:
 {job_text}
 """
 
+
+def generate_cv_tailoring_plan(cv_text, job_text, role_title="", company=""):
+    prompt = _cv_tailoring_plan_prompt(
+        cv_text,
+        job_text,
+        role_title=role_title,
+        company=company,
+    )
+
     try:
-        response = client.models.generate_content(
-            model=current_app.config["GEMINI_MODEL"],
-            contents=(
+        response_text = generate_gemini_text(
+            prompt,
+            system_instruction=(
                 "You create truthful, practical CV tailoring plans. "
-                "You never invent candidate evidence.\n\n"
-                f"{prompt}"
+                "You never invent candidate evidence."
             ),
         )
-        return response.text.strip()
-    except Exception:
+        if response_text is None:
+            return _placeholder_response("CV tailoring plan")
+        return response_text
+    except Exception as exc:
         current_app.logger.exception("Gemini CV tailoring plan request failed")
-        return AI_REQUEST_FAILED_MESSAGE
+        return describe_gemini_error(exc)
 
 
-def generate_interview_prep(cv_text, job_text="", role_title="", company=""):
-    client = _get_client()
-    if client is None:
-        return _placeholder_response("Interview preparation")
+def stream_cv_tailoring_plan(cv_text, job_text, role_title="", company=""):
+    return _stream_response(
+        _cv_tailoring_plan_prompt(
+            cv_text,
+            job_text,
+            role_title=role_title,
+            company=company,
+        ),
+        system_instruction=(
+            "You create truthful, practical CV tailoring plans. "
+            "You never invent candidate evidence."
+        ),
+        feature_name="CV tailoring plan",
+    )
 
-    prompt = f"""
+
+def _interview_prep_prompt(cv_text, job_text="", role_title="", company=""):
+    return f"""
 Create an interview preparation plan for a student or early-career applicant.
 
 Role: {role_title or "Not specified"}
@@ -252,28 +348,50 @@ Job description:
 {job_text or "No job description provided."}
 """
 
+
+def generate_interview_prep(cv_text, job_text="", role_title="", company=""):
+    prompt = _interview_prep_prompt(
+        cv_text,
+        job_text=job_text,
+        role_title=role_title,
+        company=company,
+    )
+
     try:
-        response = client.models.generate_content(
-            model=current_app.config["GEMINI_MODEL"],
-            contents=(
+        response_text = generate_gemini_text(
+            prompt,
+            system_instruction=(
                 "You create truthful, practical interview preparation plans "
-                "for early-career candidates.\n\n"
-                f"{prompt}"
+                "for early-career candidates."
             ),
         )
-        return response.text.strip()
-    except Exception:
+        if response_text is None:
+            return _placeholder_response("Interview preparation")
+        return response_text
+    except Exception as exc:
         current_app.logger.exception("Gemini interview preparation request failed")
-        return AI_REQUEST_FAILED_MESSAGE
+        return describe_gemini_error(exc)
 
 
-def generate_skill_gap_plan(cv_text, job_text, tracked_skills=None, role_title="", company=""):
-    client = _get_client()
-    if client is None:
-        return _placeholder_response("Skill gap plan")
+def stream_interview_prep(cv_text, job_text="", role_title="", company=""):
+    return _stream_response(
+        _interview_prep_prompt(
+            cv_text,
+            job_text=job_text,
+            role_title=role_title,
+            company=company,
+        ),
+        system_instruction=(
+            "You create truthful, practical interview preparation plans "
+            "for early-career candidates."
+        ),
+        feature_name="Interview preparation",
+    )
 
+
+def _skill_gap_plan_prompt(cv_text, job_text, tracked_skills=None, role_title="", company=""):
     tracked_skill_text = ", ".join(tracked_skills or []) or "None detected locally."
-    prompt = f"""
+    return f"""
 Create a skill-gap plan for a student or early-career applicant.
 
 Role: {role_title or "Not specified"}
@@ -306,27 +424,51 @@ Job description:
 {job_text}
 """
 
+
+def generate_skill_gap_plan(cv_text, job_text, tracked_skills=None, role_title="", company=""):
+    prompt = _skill_gap_plan_prompt(
+        cv_text,
+        job_text,
+        tracked_skills=tracked_skills,
+        role_title=role_title,
+        company=company,
+    )
+
     try:
-        response = client.models.generate_content(
-            model=current_app.config["GEMINI_MODEL"],
-            contents=(
+        response_text = generate_gemini_text(
+            prompt,
+            system_instruction=(
                 "You create truthful skill-gap plans. You clearly separate "
-                "missing skills from demonstrated evidence.\n\n"
-                f"{prompt}"
+                "missing skills from demonstrated evidence."
             ),
         )
-        return response.text.strip()
-    except Exception:
+        if response_text is None:
+            return _placeholder_response("Skill gap plan")
+        return response_text
+    except Exception as exc:
         current_app.logger.exception("Gemini skill gap plan request failed")
-        return AI_REQUEST_FAILED_MESSAGE
+        return describe_gemini_error(exc)
 
 
-def generate_career_roadmap(cv_text, target_role="", job_text="", company=""):
-    client = _get_client()
-    if client is None:
-        return _placeholder_response("Career roadmap")
+def stream_skill_gap_plan(cv_text, job_text, tracked_skills=None, role_title="", company=""):
+    return _stream_response(
+        _skill_gap_plan_prompt(
+            cv_text,
+            job_text,
+            tracked_skills=tracked_skills,
+            role_title=role_title,
+            company=company,
+        ),
+        system_instruction=(
+            "You create truthful skill-gap plans. You clearly separate "
+            "missing skills from demonstrated evidence."
+        ),
+        feature_name="Skill gap plan",
+    )
 
-    prompt = f"""
+
+def _career_roadmap_prompt(cv_text, target_role="", job_text="", company=""):
+    return f"""
 Create a career roadmap for a student or early-career applicant.
 
 Target role: {target_role or "Not specified"}
@@ -358,16 +500,42 @@ Job description:
 {job_text or "No job description provided."}
 """
 
+
+def generate_career_roadmap(cv_text, target_role="", job_text="", company=""):
+    prompt = _career_roadmap_prompt(
+        cv_text,
+        target_role=target_role,
+        job_text=job_text,
+        company=company,
+    )
+
     try:
-        response = client.models.generate_content(
-            model=current_app.config["GEMINI_MODEL"],
-            contents=(
+        response_text = generate_gemini_text(
+            prompt,
+            system_instruction=(
                 "You create practical early-career roadmaps grounded in the "
-                "candidate's real background.\n\n"
-                f"{prompt}"
+                "candidate's real background."
             ),
         )
-        return response.text.strip()
-    except Exception:
+        if response_text is None:
+            return _placeholder_response("Career roadmap")
+        return response_text
+    except Exception as exc:
         current_app.logger.exception("Gemini career roadmap request failed")
-        return AI_REQUEST_FAILED_MESSAGE
+        return describe_gemini_error(exc)
+
+
+def stream_career_roadmap(cv_text, target_role="", job_text="", company=""):
+    return _stream_response(
+        _career_roadmap_prompt(
+            cv_text,
+            target_role=target_role,
+            job_text=job_text,
+            company=company,
+        ),
+        system_instruction=(
+            "You create practical early-career roadmaps grounded in the "
+            "candidate's real background."
+        ),
+        feature_name="Career roadmap",
+    )
